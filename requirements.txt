@@ -1,0 +1,6 @@
+faster-whisper>=1.0
+# 重要：faster-whisper 1.2.1 内部调用 av.open(..., metadata_errors="ignore")，
+# 但 PyAV 19 已删掉 metadata_errors 参数，装 av 19 会在转录时报
+# open() got an unexpected keyword argument 'metadata_errors'。
+# 所以必须锁定 av<19（会装到 18.x，仍保留该参数）。
+av<19
