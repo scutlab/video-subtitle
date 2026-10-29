@@ -336,14 +336,19 @@ def merge_short_cues(cues: list, language: str,
                      min_chars: int = 10,
                      min_duration: float = 1.5,
                      max_chars: int = 80,
-                     max_duration: float = 12.0) -> list:
+                     max_duration: float = 12.0,
+                     merge_incomplete: bool = True) -> list:
     """把碎句合并成可读的句子，只合并，不删字、不改词、不改时间顺序。
 
-    碎句的两个来源：一是讲课停顿超过 max_gap，词被切成“第二步,”
-    “体积”“称”这种 1 秒都不到的片段；二是句末标点前就断了。
+    碎句的三个来源：一是讲课停顿超过 max_gap，词被切成“第二步,”
+    “体积”“称”这种 1 秒都不到的片段；二是句末标点前就断了；
+    三是一句话被停顿切成两段，前段不短、也不是逗号结尾，
+    只是结尾没有句号（例如“所以我们希望Ω是关于x轴” / “对称。那事实上…”）。
     合并规则（同时满足才并）：
     - 前一条太短：字数 < min_chars 或时长 < min_duration；
     - 或前一条以逗号、顿号、分号结尾（本是半句话，不是完整句）；
+    - 或前一条结尾没有句号、问号、感叹号、省略号（未完句，默认开，
+      --no-merge-incomplete 可关闭）；
     - 合并后字数 <= max_chars 且时长 <= max_duration。
     最后一条如果本身太短，就往前并进上一条（同样受上限约束）。
     时间戳取合并后第一词的开始（减缓冲）和最后词的结束（加缓冲），
@@ -351,6 +356,7 @@ def merge_short_cues(cues: list, language: str,
     """
     if not cues or min_chars <= 0:
         return cues
+    TERMINAL = "。！？!?.…"
     merged = []
     for cue in cues:
         if not merged:
@@ -363,7 +369,8 @@ def merge_short_cues(cues: list, language: str,
         merged_dur = cue.words[-1].end - prev.words[0].start
         is_short = len(prev_text) < min_chars or prev_dur < min_duration
         is_clause = prev_text and prev_text[-1] in "，、；,;"
-        if (is_short or is_clause) and merged_text_len <= max_chars and merged_dur <= max_duration:
+        is_incomplete = merge_incomplete and prev_text and prev_text[-1] not in TERMINAL
+        if (is_short or is_clause or is_incomplete) and merged_text_len <= max_chars and merged_dur <= max_duration:
             prev.words.extend(cue.words)
         else:
             merged.append(cue)
@@ -482,6 +489,10 @@ def correct_cues_with_muse(cues: list, language: str, api_key: str, model: str,
 # 希腊字母：只用字符，符号用微积分里最常见的那个大小写
 # （Ω 是积分区域常用大写，λ、θ、φ 等常用小写，Δ 是增量大写，Σ 是求和大写）
 # 用户 2026-10-29 先定英文 + 符号，随后更正为只用字符，覆盖上一版口径。
+# 注意：单字中文读音（缪、纽、派、柔、罗、陶、斐、希）不做自动替换，
+# 否则会把正常词改坏，例如“希望”->“χ望”、“罗尔定理”->“ρ尔定理”、
+# “斐波那契”->“φ波那契”、“希腊”->“χ腊”。单字情况请用英文名
+# （如 Chi、Pi）或人工校对，多字读音（欧米伽、拉姆达等）可放心自动换。
 GREEK_LETTERS = [
     # (英文名, 符号, 中文读音列表)
     ("Alpha", "α", ["阿尔法"]),
@@ -495,17 +506,17 @@ GREEK_LETTERS = [
     ("Iota", "ι", ["约塔"]),
     ("Kappa", "κ", ["卡帕"]),
     ("Lambda", "λ", ["拉姆达"]),
-    ("Mu", "μ", ["缪"]),
-    ("Nu", "ν", ["纽"]),
+    ("Mu", "μ", []),
+    ("Nu", "ν", []),
     ("Xi", "ξ", ["克西"]),
     ("Omicron", "ο", ["奥密克戎"]),
-    ("Pi", "π", ["派"]),
-    ("Rho", "ρ", ["柔", "罗"]),
+    ("Pi", "π", []),
+    ("Rho", "ρ", []),
     ("Sigma", "Σ", ["西格玛"]),
-    ("Tau", "τ", ["陶"]),
+    ("Tau", "τ", []),
     ("Upsilon", "υ", ["宇普西隆"]),
-    ("Phi", "φ", ["斐"]),
-    ("Chi", "χ", ["希"]),
+    ("Phi", "φ", []),
+    ("Chi", "χ", []),
     ("Psi", "ψ", ["普西"]),
     ("Omega", "Ω", ["欧米伽"]),
 ]
@@ -515,7 +526,9 @@ def format_greek_letters(text: str) -> str:
     """希腊字母一律只用字符，例如 Ω、λ、Δ。
 
     三种输入都归一到同一种输出，不重复、不丢字：
-    - 中文读音“欧米伽” -> “Ω”
+    - 中文读音“欧米伽” -> “Ω”（只有两个字及以上的读音才自动换，
+      单字读音如“希、派、陶、斐、柔、罗”不自动换，避免把“希望”、
+      “罗尔定理”、“斐波那契”、“希腊”改坏）
     - 英文名“Omega” -> “Ω”
     - “Omega Ω”这种上一版的英文 + 符号 -> “Ω”（去掉英文名，只留符号）
     - 符号“Ω”单独出现 -> 不变
@@ -650,6 +663,7 @@ def process_one(video: Path, args, model, language: str, log_rows: list,
             min_duration=getattr(args, "merge_min_duration", 1.5),
             max_chars=getattr(args, "merge_max_chars", 80),
             max_duration=getattr(args, "merge_max_duration", 12.0),
+            merge_incomplete=getattr(args, "merge_incomplete", True),
         )
         if getattr(args, "greek_format", True):
             cues = apply_greek_format(cues, language)
@@ -740,6 +754,9 @@ def main(argv=None) -> int:
                         help="短句合并后单条最多字数，默认 80")
     parser.add_argument("--merge-max-duration", type=float, default=12.0,
                         help="短句合并后单条最长秒数，默认 12")
+    parser.add_argument("--merge-incomplete", action=argparse.BooleanOptionalAction, default=True,
+                        help="结尾没有句号、问号、感叹号、省略号的未完句自动往后并，"
+                             "不管它本身长不长（默认开，--no-merge-incomplete 可关闭）")
     parser.add_argument("--greek-format", action=argparse.BooleanOptionalAction, default=True,
                         help="希腊字母只用字符，如 Ω、λ（默认开，"
                              "--no-greek-format 可关闭）")
