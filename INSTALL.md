@@ -1,8 +1,13 @@
 # 安装部署文档
 
-适用：视频批量转字幕工具（开源 Whisper 版，源代码 `video_subtitle.py`）。
-流程只有一条：ffmpeg 抽音频 → faster-whisper 本地识别 → 按断句规则出 SRT。
-不需要 Key、账号、联网计费，模型下载一次后全程本地离线跑。
+适用：视频批量转字幕工具。两条路线：
+
+- **开源 Whisper 版**（源代码 `video_subtitle.py`）：ffmpeg 抽音频 →
+  faster-whisper 本地识别 → 按断句规则出 SRT。不需要 Key、账号、联网计费，
+  模型下载一次后全程本地离线跑。
+- **Gemini 版**（源代码 `gemini.py`、`batch_transcribe.py`）：把讲课音频发给
+  Gemini 大模型转写。只需要 Python 3.10+ 和 ffmpeg，不用装 faster-whisper；
+  但需要 Gemini API 密钥、联网、按量计费。安装见第 9 节。
 
 本文只讲“装好、能跑”。跑起来之后怎么选模型、怎么写提示词、怎么调精度，
 见 `USAGE.md`。两个文档不要混着看，先装好，再去看用法。
@@ -12,8 +17,12 @@
 - `README.md`：总览和快速上手
 - `INSTALL.md`：本文件，安装部署
 - `USAGE.md`：使用手册
-- `video_subtitle.py`：源代码，Python 直接跑，不用编译
-- `requirements.txt`：依赖，只有两行
+- `video_subtitle.py`：Whisper 版源代码，Python 直接跑，不用编译
+- `gemini.py`：Gemini 版源代码（列模型、单节转写、校对已有字幕）
+- `batch_transcribe.py`：Gemini 版批量：抽音频 → 5 分钟分段转写 → 拼合 → 去 LaTeX → 校验
+- `latex_to_plain.py`：把 SRT 里的 LaTeX 公式转成 Unicode 希腊字母/上下标
+- `verify_srt.py`：Gemini 版交付前校验
+- `requirements.txt`：Whisper 版依赖，只有两行（Gemini 版只用标准库，不用它）
 - `deploy_windows.bat`：Windows 一键部署（cmd）
 - `deploy_ubuntu.sh`：Ubuntu 一键部署（bash）
 - `deploy_ubuntu_large-v3.sh`：Ubuntu 定制版，模型已定死 large-v3、路径已定死为集群路径
@@ -403,3 +412,40 @@ dist\VideoSub.exe "D:\video\video" --model-dir "D:\video\models"
 ffmpeg（在 PATH 里，或放在 `VideoSub.exe` 同目录），模型首次运行仍然要
 下载，之后离线。打包遇到问题不用死磕，直接用 Python 命令，功能完全一样。
 Linux 本机不能生成 Windows 单文件 exe（PyInstaller 不可交叉编译）。
+
+## 9. Gemini 路线安装（可选）
+
+只需要 Python 3.10+ 和 ffmpeg，不用建 venv、不用装 faster-whisper、
+不用下载模型。唯一多出来的是 Gemini API 密钥。
+
+### 9.1 申请密钥
+
+去 [Google AI Studio](https://aistudio.google.com/apikey) 登录 Google 账号，
+创建一个 API Key。密钥只放进环境变量，**不要写进任何文件、不要发进聊天记录**：
+
+```bash
+# bash
+export GEMINI_API_KEY="你的密钥"
+```
+
+```powershell
+# PowerShell（只对当前终端有效）
+$env:GEMINI_API_KEY="你的密钥"
+```
+
+### 9.2 验证连通性
+
+```bash
+python3 gemini.py list-models
+```
+
+能列出模型列表即为连通。不要凭记忆定型号，先列出实时列表再选：当时最新的、
+支持 `generateContent` 的 Flash 级模型（2026-11-05 实测用 `gemini-3.8-flash`；
+`gemini-2.5-flash` 已对新用户停用，调用会返回 404 并提示改用新模型）。
+
+### 9.3 注意
+
+- 密钥泄露后去 Google AI Studio 里删掉重建即可。
+- Gemini 版按量计费，批量前先拿 1 节试跑，确认效果与费用再整批。
+- 音频只发给 Gemini 做转写，不含任何个人信息；本工具不做视频下载、
+  不登录任何课程平台，只处理本地已有的视频文件。

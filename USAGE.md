@@ -1,11 +1,17 @@
 # 使用手册
 
-适用：视频批量转字幕工具（开源 Whisper 版，源代码 `video_subtitle.py`）。
-先按 `INSTALL.md` 装好、首跑通过，再看本文。本文只讲“怎么跑、怎么调”。
+适用：视频批量转字幕工具。两条路线：
 
-一句话流程：扫描目录 → ffmpeg 抽 16kHz 单声道 WAV → faster-whisper 转录
-（词级时间戳 + VAD）→ 断句 → SRT（可选同时出 VTT）。模型整批只加载一次，
-单个文件失败不中断整批，明细写在视频目录下的 `subtitle_batch.log`（CSV）。
+- **开源 Whisper 版**（源代码 `video_subtitle.py`，第 1–9 节）：先按
+  `INSTALL.md` 装好、首跑通过，再看本文。第 1–9 节只讲这条路线。
+- **Gemini 版**（源代码 `gemini.py`、`batch_transcribe.py`，第 10 节）：
+  把讲课音频发给 Gemini 大模型转写。数学术语更准，但需要密钥、联网、
+  按量计费，且时间戳是大约对齐。
+
+Whisper 版一句话流程：扫描目录 → ffmpeg 抽 16kHz 单声道 WAV →
+faster-whisper 转录（词级时间戳 + VAD）→ 断句 → SRT（可选同时出 VTT）。
+模型整批只加载一次，单个文件失败不中断整批，明细写在视频目录下的
+`subtitle_batch.log`（CSV）。
 
 输出规则：默认与视频同目录、同文件名，只换后缀，例如
 `D:\video\video\讲座01.mp4` → `D:\video\video\讲座01.srt`。
@@ -418,3 +424,97 @@ curl -s https://api.meta.ai/v1/models -H "Authorization: Bearer $MODEL_API_KEY" 
 检查结果的口径：不要只看管道退出码，要看进程、日志尾部、模型和结果文件
 是否存盘且可加载，缺一样就是异常。SRT 文件存在且可读、log 成功计数、
 模型快照路径能见 `model.bin`，才算跑通。
+
+## 10. Gemini 路线（可选）
+
+### 10.1 什么时候用 Gemini，不用 Whisper
+
+- 数学术语错得多、Whisper 的提示词 + 偏向词 + 大模型都压不住时：Gemini
+  按语境还原术语更准，实测“被积函数”17 次、“奇函数”13 次全对，而
+  Whisper 版这两词常被误转成“背积函数”“击函数”。
+- 不想装模型、没有显卡、只想快速出一版字幕时。
+- 反过来：要求逐词级时间轴、要完全离线、不要按量计费时，继续用 Whisper 版。
+
+### 10.2 单节试跑
+
+先拿 1 节验证效果，再决定是否批量：
+
+```bash
+export GEMINI_API_KEY="你的密钥"
+# 1. 抽音频（16 kHz 单声道，存到 audio/ 以后复用，不要删）
+ffmpeg -y -i "videos/8.3.1三重积分的概念和性质.mp4" \
+  -vn -ac 1 -ar 16000 -b:a 64k "audio/8.3.1三重积分的概念和性质.mp3"
+# 2. 转写（模型先用 list-models 确认当时最新）
+python3 gemini.py transcribe "audio/8.3.1三重积分的概念和性质.mp3" \
+  gemini-3.8-flash --out "srt/8.3.1三重积分的概念和性质.srt" \
+  --title "8.3.1三重积分的概念和性质"
+# 3. 校验
+python3 verify_srt.py "srt/8.3.1三重积分的概念和性质.srt" --media-dir videos
+```
+
+单文件转写只适合 10 分钟以内的音频；更长的必须走下面的分段批量。
+
+### 10.3 批量转写整章
+
+```bash
+export GEMINI_API_KEY="你的密钥"
+python3 batch_transcribe.py --videos ./videos --audio-dir ./audio \
+    --out-dir ./srt --model gemini-3.8-flash
+```
+
+- `--chunk 300`：每段秒数，默认 300（5 分钟），一般不用改。
+- 每节约 1–3 分钟，一章 12 节约 20–30 分钟；中途断网、关机都不怕，
+  进度存在 `srt/progress.json`，重跑会自动跳过已完成的部分。
+- 产物：`audio/` 是每节的 MP3 音频，保留，不要删；`srt/<节名>.srt` 是
+  成品字幕；`srt/.chunks/` 是每段的原始与去 LaTeX 后字幕，备查。
+
+**为什么必须分段**：整段一次转写长音频时时间轴会漂移，实测一节在
+595 秒处跳到 3600 秒，后面全错。分段（5 分钟一段、分别转写、再按偏移量
+拼合）是绕开这个问题的办法，不要手工改时间戳，错了就重跑该节。
+
+### 10.4 校对已有的 Whisper 字幕
+
+已经有 Whisper 字幕、只想让 Gemini 改文字、不动时间轴：
+
+```bash
+python3 gemini.py proofread "旧字幕.srt" gemini-3.8-flash \
+  --out "旧字幕_校对.srt"
+```
+
+只改同音错字、数学术语与口误转写，不改序号、时间轴，不增删条目。
+
+### 10.5 单独转换 LaTeX
+
+模型输出的 SRT 里如果还有 `$\lambda$` 这类 LaTeX：
+
+```bash
+python3 latex_to_plain.py in.srt out.srt
+```
+
+不给第二个参数时，输出为 `in_plain.srt`。转换规则：希腊字母转 Unicode
+（λ、Ω、Δ、ξ、η、ζ）、上下标转 Unicode（ΔVᵢ、Ω₁、x²）、`Omega` 这类
+英文拼写转回希腊字母，同时纠正“背积函数”等易错词。
+
+### 10.6 交付前校验（必做）
+
+```bash
+python3 verify_srt.py ./srt --media-dir ./videos
+```
+
+全部 PASS 才能打包。只要有一节 FAIL，先修那节，不要发坏文件。不要只看
+`progress.json` 里的 `status`，校验脚本才是准绳。重点看：序号连续、
+时间戳单调、末条不超过视频时长 +2 秒、无 LaTeX 残留、无“背积函数”。
+
+### 10.7 已知限制与常见问题
+
+| 现象 | 原因 | 办法 |
+| --- | --- | --- |
+| 模型返回 404，提示某模型不再可用 | 旧模型已下线 | 按报错提示换成它推荐的新模型，并先跑 `list-models` 确认 |
+| 转写失败、重试 3 次都不过 | 网络或限流，或模型空返回 | 等几分钟重跑，断点续跑只会重做失败的部分 |
+| 时间戳跳变、末条超出视频时长 | 整段转写长音频漂移 | 不要手工改时间戳，用分段批量重跑该节 |
+| 条目数比 Whisper 少很多 | 正常，Gemini 每条更长、字数更多 | 看总字数、看末条是否贴合时长、抽查术语，不要比条数 |
+| 密钥报错 401/403 | 密钥未设置或已失效 | 确认 `GEMINI_API_KEY` 已 export 且无多余空格；密钥只放环境变量，不要写进代码或文档 |
+| 解析出的条目比序号少 | Gemini 偶尔不输出条目间的空行 | 解析必须按“序号 + 时间戳”正则切分，不能按空行切分（`verify_srt.py` 与批量脚本已这样做） |
+
+转写字数可能比 Whisper 多约 25%，是补全了漏掉的口语还是多写了内容，
+需要抽查，不能全信；公式口述、上下标、希腊字母处重点抽查。
